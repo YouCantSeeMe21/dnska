@@ -18,7 +18,10 @@ import (
 )
 
 type Opts struct {
-	EndpointsFilePath string
+	EndpointsFilePath      string
+	Resolver               string
+	SSLCertificateFilePath string
+	SSLKeyFilePath         string
 
 	L zerolog.Logger
 }
@@ -30,16 +33,14 @@ type App struct {
 }
 
 func New(opts Opts) (*App, error) {
-	logger := opts.L
-
-	endpointsList, err := setup(logger, opts.EndpointsFilePath)
+	endpointsList, err := setup(opts)
 	if err != nil {
 		return nil, err
 	}
 
 	return &App{
 		endpoints: endpointsList,
-		l:         logger,
+		l:         opts.L,
 	}, nil
 }
 
@@ -84,7 +85,7 @@ func (a *App) bootstrap() error {
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	go func() {
-		err := http.ListenAndServe(":8888", mux)
+		err := http.ListenAndServe(":8888", mux) // todo: use same server for https
 		if err != nil {
 			a.l.Printf("listen and serve error: %v", err)
 		}
@@ -94,35 +95,65 @@ func (a *App) bootstrap() error {
 }
 
 type endpointsFileConfigurationV0 struct {
-	LocalAddress string `toml:"local-address"`
+	LocalAddress      string `toml:"local-address"`
+	LocalAddressHTTPS string `toml:"local-address-https"`
 }
 
-func (efc endpointsFileConfigurationV0) InstantiateEndpoints(l zerolog.Logger) ([]endpoints2.Endpoint, error) {
-	resolver := resolve2.NewCacheResolver(
-		resolve2.NewBlacklistResolver(resolve2.BlacklistResolverOpts{
-			AutoReloadInterval: time.Hour,
-			BlacklistURL:       "http://github.com/black",
-			Pass: resolve2.NewChainResolver(
-				l,
-				resolve2.NewStaticResolver(l),
-				resolve2.NewIterativeResolver(l)),
-		}))
+func (efc endpointsFileConfigurationV0) InstantiateEndpoints(l zerolog.Logger, resolv, sslCertificateFilePath, sslKeyFilePath string) ([]endpoints2.Endpoint, error) {
+	var resolver resolve2.Resolver
+	switch resolv {
+	case "udp":
+		resolver = resolve2.NewCacheResolver( // todo: choose resolver on start
+			resolve2.NewBlacklistResolver(resolve2.BlacklistResolverOpts{
+				AutoReloadInterval: time.Hour,
+				BlacklistURL:       "http://github.com/black",
+				Pass: resolve2.NewChainResolver(
+					l,
+					resolve2.NewStaticResolver(l),
+					resolve2.NewIterativeResolver(l)),
+			}))
+	case "doh":
+		resolver = resolve2.NewCacheResolver(
+			resolve2.NewBlacklistResolver(resolve2.BlacklistResolverOpts{
+				AutoReloadInterval: time.Hour,
+				BlacklistURL:       "http://github.com/black",
+				Pass: resolve2.NewChainResolver(
+					l,
+					resolve2.NewStaticResolver(l),
+					resolve2.NewDoHResolver(l)),
+			}))
+	default:
+		return nil, fmt.Errorf("invalid resolver type: %s, available resolvers are udp, doh", resolv)
+	}
 
 	udpLocalAddr, err := netip.ParseAddrPort(efc.LocalAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve local addr: %v", err)
 	}
+	httpsLocalAddr, err := netip.ParseAddrPort(efc.LocalAddressHTTPS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve https local addr: %v", err)
+	}
 	tcpLocalAddr := udpLocalAddr
 
-	endpoints := []endpoints2.Endpoint{endpoints2.NewUDPEndpoint(udpLocalAddr, resolver, l), endpoints2.NewTCPEndpoint(tcpLocalAddr, resolver, l)}
+	httpsParams := endpoints2.HTTPSEndpointParams{
+		Addr:            httpsLocalAddr,
+		Resolver:        resolver,
+		CertificatePath: sslCertificateFilePath,
+		KeyPath:         sslKeyFilePath,
+		L:               l,
+	}
+
+	endpoints := []endpoints2.Endpoint{endpoints2.NewUDPEndpoint(udpLocalAddr, resolver, l),
+		endpoints2.NewTCPEndpoint(tcpLocalAddr, resolver, l), endpoints2.NewHTTPSEndpoint(httpsParams)}
 	return endpoints, nil
 }
 
-func setup(l zerolog.Logger, endpointsFilePath string) ([]endpoints2.Endpoint, error) {
+func setup(opts Opts) ([]endpoints2.Endpoint, error) {
 	var config endpointsFileConfigurationV0
-	if _, err := toml.DecodeFile(endpointsFilePath, &config); err != nil {
+	if _, err := toml.DecodeFile(opts.EndpointsFilePath, &config); err != nil {
 		return nil, err
 	}
 
-	return config.InstantiateEndpoints(l)
+	return config.InstantiateEndpoints(opts.L, opts.Resolver, opts.SSLCertificateFilePath, opts.SSLKeyFilePath)
 }

@@ -1,1 +1,2 @@
 local-address = "127.0.0.1:53"
+local-address-https = "127.0.0.1:443"

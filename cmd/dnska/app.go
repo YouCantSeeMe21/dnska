@@ -13,7 +13,10 @@ import (
 
 func NewAppCommand(l zerolog.Logger) *cobra.Command {
 	var opts struct {
-		EndpointsFilePath string
+		EndpointsFilePath      string
+		Resolver               string
+		SSLCertificateFilePath string
+		SSLKeyFilePath         string
 	}
 
 	cmd := cobra.Command{
@@ -31,8 +34,12 @@ func NewAppCommand(l zerolog.Logger) *cobra.Command {
 			defer cancel()
 
 			application, err := app.New(app.Opts{
-				EndpointsFilePath: opts.EndpointsFilePath,
-				L:                 l,
+				EndpointsFilePath:      opts.EndpointsFilePath,
+				Resolver:               opts.Resolver,
+				SSLCertificateFilePath: opts.SSLCertificateFilePath,
+				SSLKeyFilePath:         opts.SSLKeyFilePath,
+
+				L: l,
 			})
 			if err != nil {
 				return err
@@ -55,6 +62,12 @@ func NewAppCommand(l zerolog.Logger) *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.EndpointsFilePath, "endpoints-file-path", "./configs/endpoints.example.toml",
 		"path to endpoints configuration on OS filesystem")
+	cmd.Flags().StringVar(&opts.SSLCertificateFilePath, "ssl-certificate-file-path", "./configs/localhost.crt",
+		"path to SSL certificate for on OS filesystem for HTTPS endpoint")
+	cmd.Flags().StringVar(&opts.SSLKeyFilePath, "ssl-key-file-path", "./configs/localhost.key",
+		"path to SSL key on OS filesystem for HTTPS endpoint")
+	cmd.Flags().StringVar(&opts.Resolver, "resolver", "udp",
+		"type of resolver to use, udp - use iterative udp resolver, doh - use dns over https resolver")
 
 	return &cmd
 }
